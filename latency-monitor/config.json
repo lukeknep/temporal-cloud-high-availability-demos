@@ -1,0 +1,19 @@
+{
+  "temporal": {
+    "address": "",
+    "namespace": "",
+    "apiKey": ""
+  },
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "secure": false,
+    "user": "your-gmail@gmail.com",
+    "pass": "your-app-password"
+  },
+  "monitor": {
+    "resultsEmail": "you+latency-results@example.com",
+    "n": 5,
+    "setIntervalSeconds": 60
+  }
+}
