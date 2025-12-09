@@ -1,6 +1,5 @@
 // src/worker.ts
-import { Connection } from '@temporalio/client';
-import { Worker } from '@temporalio/worker';
+import { Worker, NativeConnectionOptions, NativeConnection } from '@temporalio/worker';
 import * as activities from './activities';
 
 import { loadConfig } from './config';
@@ -10,12 +9,30 @@ const TASK_QUEUE = 'latency-monitor';
 async function run() {
     const { temporal } = loadConfig();
 
-  // Connect to Temporal Cloud
-  const connection = await Connection.connect({
+  let connectionOptions: NativeConnectionOptions = {
     address: temporal.address,
-    tls: {},
-    apiKey: temporal.apiKey,
-  });
+  };
+
+  // TODO add mTLS as an optional auth config
+  // if (clientCert && clientKey) {
+  // // Configure mTLS authentication if certificate and key are provided
+  // connectionOptions.tls = {
+  //     clientCertPair: {
+  //       crt: clientCert,
+  //       key: clientKey,
+  //     },
+  //   };
+  // } else if (apiKey) {
+
+    // API key authentication
+    connectionOptions.tls = true;
+    connectionOptions.apiKey = temporal.apiKey;
+    connectionOptions.metadata = {
+      'temporal-namespace': temporal.namespace,
+    };
+
+  // Create the connection
+  const connection = await NativeConnection.connect(connectionOptions);
 
   const worker = await Worker.create({
     connection,
