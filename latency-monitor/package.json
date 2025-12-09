@@ -3,21 +3,25 @@
     "@temporalio/client": "^1.9.0",
     "@temporalio/worker": "^1.9.0",
     "@temporalio/workflow": "^1.9.0",
+    "express": "^4.18.2",
     "fs": "^0.0.1-security",
     "node-fetch": "^2.7.0",
     "nodemailer": "^6.10.1",
     "path": "^0.12.7"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/node-fetch": "^2.6.13",
     "@types/nodemailer": "^7.0.4",
     "nodemon": "^3.1.11",
-    "typescript": "^5.0.0"
+    "typescript": "^5.9.3"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.public.json",
     "worker": "npm run build && node lib/worker.js",
     "client": "npm run build && node lib/client.js",
-    "dev:worker": "tsc --watch & nodemon lib/worker.js"
+    "web": "npm run build && node lib/web-server.js",
+    "dev:worker": "tsc --watch & nodemon lib/worker.js",
+    "dev:web": "tsc --watch & tsc -p tsconfig.public.json --watch & nodemon lib/web-server.js"
   }
 }

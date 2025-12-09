@@ -1,10 +1,9 @@
 // src/workflows.ts
-import { proxyActivities, sleep } from '@temporalio/workflow';
+import { proxyActivities, sleep, defineQuery, setHandler } from '@temporalio/workflow';
 import type * as activities from './activities';
 
 const {
   pingOnce,
-  sendEmail,
 } = proxyActivities<typeof activities>({
   startToCloseTimeout: '10 seconds', // per activity call
   retry: {
@@ -24,6 +23,25 @@ export interface LatencyMonitorParams {
   /** Email to send results to */
   email: string;
 }
+
+export interface LatencySetResult {
+  setIndex: number;          // which iteration (0,1,2,...)
+  startedAt: string;         // ISO timestamp
+  avgMs: number;
+  minMs: number;
+  maxMs: number;
+  samplesMs: number[];       // individual pings in this set
+}
+
+export interface LatencyStatsQueryResult {
+  id: string;
+  url: string;
+  lastSets: LatencySetResult[];  // up to 5
+  overallMinMs: number | null;
+  overallMaxMs: number | null;
+}
+
+export const getStatsQuery = defineQuery<LatencyStatsQueryResult>('getStats');
 
 /**
  * Infinite monitoring workflow: pings URL N times per set, 0.1s between pings,
@@ -53,10 +71,27 @@ export async function latencyMonitorWorkflow(
     throw new Error('email must be set')
   }
 
+  // State that Queries will read
+  const lastSets: LatencySetResult[] = [];
+  let overallMin = Number.POSITIVE_INFINITY;
+  let overallMax = Number.NEGATIVE_INFINITY;
+  let setCounter = 0;
+
+  // Query handler: read-only, no activities, no side effects
+  setHandler(getStatsQuery, (): LatencyStatsQueryResult => ({
+    id,
+    url,
+    lastSets,
+    overallMinMs: isFinite(overallMin) ? overallMin : null,
+    overallMaxMs: isFinite(overallMax) ? overallMax : null,
+  }));
+
   // Infinite monitoring loop
   // This workflow is designed to run "forever" until cancelled.
   while (true) {
     const latencies: number[] = [];
+
+    const startedAt = new Date().toISOString(); // workflow time-safe in JS SDK
 
     // N sequential pings with 0.1 seconds between each
     for (let i = 0; i < numPings; i++) {
@@ -74,30 +109,46 @@ export async function latencyMonitorWorkflow(
     const sum = latencies.reduce((a, b) => a + b, 0);
     const avg = sum / latencies.length;
 
-    const subject = `[${id}] ${avg.toFixed(
-      1
-    )}ms Avg. (range: ${min.toFixed(1)}ms to ${max.toFixed(1)}ms)`;
+     const setResult: LatencySetResult = {
+      setIndex: setCounter++,
+      startedAt,
+      avgMs: avg,
+      minMs: min,
+      maxMs: max,
+      samplesMs: latencies,
+    };
 
-    const bodyLines: string[] = [
-      `Monitor ID: ${id}`,
-      `URL: ${url}`,
-      '',
-      `Pings this set: ${numPings}`,
-      `Average latency: ${avg.toFixed(2)} ms`,
-      `Min latency: ${min.toFixed(2)} ms`,
-      `Max latency: ${max.toFixed(2)} ms`,
-      '',
-      'Individual pings (ms):',
-      ...latencies.map((v, idx) => `  #${idx + 1}: ${v.toFixed(2)} ms`),
-      '',
-      `Next set will start in ${sleepInterval} seconds (workflow timer).`,
-    ];
+    lastSets.push(setResult);
+    if (lastSets.length > 5) lastSets.shift();
 
-    await sendEmail({
-      to: email,
-      subject,
-      body: bodyLines.join('\n'),
-    });
+    // Update overall min/max
+    if (min < overallMin) overallMin = min;
+    if (max > overallMax) overallMax = max;
+
+    // const subject = `[${id}] ${avg.toFixed(
+    //   1
+    // )}ms Avg. (range: ${min.toFixed(1)}ms to ${max.toFixed(1)}ms)`;
+
+    // const bodyLines: string[] = [
+    //   `Monitor ID: ${id}`,
+    //   `URL: ${url}`,
+    //   '',
+    //   `Pings this set: ${numPings}`,
+    //   `Average latency: ${avg.toFixed(2)} ms`,
+    //   `Min latency: ${min.toFixed(2)} ms`,
+    //   `Max latency: ${max.toFixed(2)} ms`,
+    //   '',
+    //   'Individual pings (ms):',
+    //   ...latencies.map((v, idx) => `  #${idx + 1}: ${v.toFixed(2)} ms`),
+    //   '',
+    //   `Next set will start in ${sleepInterval} seconds (workflow timer).`,
+    // ];
+
+    // await sendEmail({
+    //   to: email,
+    //   subject,
+    //   body: bodyLines.join('\n'),
+    // });
 
     // Sleep T seconds between sets
     await sleep(sleepInterval * 1000);

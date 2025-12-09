@@ -8,11 +8,15 @@ First, select a Namespace with Multi-region or Multi-cloud Replication turned on
 
 If you don't already have such a Namespace, then you can create one, or add a replica to an existing one.
 
+This demo uses API keys. Create an API key for your Namespace and save it.
+
 Then, in the `latency-monitor` directory:
 
 1. `npm i` to install dependencies
 
-1. Edit `config.json` with your app's values for your Namespace and your SMTP Gmail info
+1. copy example.config.json to config.json: `cp example.config.json config.json`
+
+1. Edit `config.json` with your app's values for your Namespace (ID, Endpoint, API key) and your SMTP Gmail info
 
 1. Start a Worker with `npm run worker`
 
@@ -91,6 +95,18 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
 
 1. Start a Worker in the active region of your Namespace. 
 
+  * Launch the VM
+
+  * Add `git` and `npm` to the VM, if not already installed. For Amazon Lightsail, it will already have `npm` but you will need to install git: `sudo apt update & sudo apt install git-all`
+
+  * `git clone` this repo and `cd` into latency monitor directory
+
+  * `npm i`
+
+  * Copy your `config.json` to it (e.g., `vi config.json`, then `i` for insert, then `Cmd + V` to paste the content)
+
+  * 
+
 1. Start Workflows to monitor the latency for several different regions:
 
   * AWS us-east-1 (same as above, skip if you already have it running)
@@ -161,3 +177,8 @@ Since we can't actually bring down AWS in that region, we will instead 1. crash 
 1. Launch a Worker in the replica's region (TODO)
 
 1. Observe that Workflows continue to run, and that their state was preserved on the failover (TODO)
+
+## Troubleshooting
+
+* `Error: Cannot find module '../lib/tsc.js'`
+   Try removing the node_modules directory and running `npm i` again.
