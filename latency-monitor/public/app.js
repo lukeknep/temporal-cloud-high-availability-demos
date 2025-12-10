@@ -63,6 +63,8 @@ function displayWorkflowInfo(workflowsData) {
     workflowsData.forEach(({ workflowId, data }) => {
         const lastSet = data.lastSets[data.lastSets.length - 1];
         const latestAvg = lastSet ? lastSet.avgMs.toFixed(2) : 'N/A';
+        const startedAt = lastSet ? new Date(lastSet.startedAt).toLocaleString() : 'N/A';
+        const endedAt = lastSet ? new Date(lastSet.endedAt).toLocaleString() : 'N/A';
         html += `
       <div class="workflow-item">
         <h3>${workflowId}</h3>
@@ -83,6 +85,14 @@ function displayWorkflowInfo(workflowsData) {
           <div class="stat-card">
             <div class="stat-label">Data Points</div>
             <div class="stat-value">${data.lastSets.length}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Latest Started At</div>
+            <div class="stat-value" style="font-size: 14px;">${startedAt}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Latest Ended At</div>
+            <div class="stat-value" style="font-size: 14px;">${endedAt}</div>
           </div>
         </div>
       </div>

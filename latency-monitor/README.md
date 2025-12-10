@@ -178,7 +178,37 @@ Since we can't actually bring down AWS in that region, we will instead 1. crash 
 
 1. Observe that Workflows continue to run, and that their state was preserved on the failover (TODO)
 
+## Cleanup
+
+1. Terminate the Workflows
+  
+  ```
+  temporal workflow terminate --reason "cleanup" \
+    --namespace "$NAMESPACE" \
+    --address "$ADDRESS" \
+    --api-key "$API_KEY" \
+    --workflow-id ap-northeast-1
+  
+  temporal workflow terminate --reason "cleanup" \
+    --namespace "$NAMESPACE" \
+    --address "$ADDRESS" \
+    --api-key "$API_KEY" \
+    --workflow-id us-east-1
+
+  temporal workflow terminate --reason "cleanup" \
+    --namespace "$NAMESPACE" \
+    --address "$ADDRESS" \
+    --api-key "$API_KEY" \
+    --workflow-id us-west-2
+  ```
+
 ## Troubleshooting
+
+* "I've changed the Wrokflow code but I already have several Workflows in progress."
+  > An easy way to get around this is to terminate the Workflows and then restart the Worker process.
+
+* "Non-deterministic Workflow error"
+  > You may have changed the Workflow code while Workflows were running. Try the step above.
 
 * `Error: Cannot find module '../lib/tsc.js'`
    Try removing the node_modules directory and running `npm i` again.

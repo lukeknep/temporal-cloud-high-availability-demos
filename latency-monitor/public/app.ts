@@ -2,6 +2,7 @@
 interface LatencySetResult {
   setIndex: number;
   startedAt: string;
+  endedAt: string;
   avgMs: number;
   minMs: number;
   maxMs: number;
@@ -95,6 +96,8 @@ function displayWorkflowInfo(workflowsData: WorkflowData[]) {
   workflowsData.forEach(({ workflowId, data }) => {
     const lastSet = data.lastSets[data.lastSets.length - 1];
     const latestAvg = lastSet ? lastSet.avgMs.toFixed(2) : 'N/A';
+    const startedAt = lastSet ? new Date(lastSet.startedAt).toLocaleString() : 'N/A';
+    const endedAt = lastSet ? new Date(lastSet.endedAt).toLocaleString() : 'N/A';
 
     html += `
       <div class="workflow-item">
@@ -116,6 +119,14 @@ function displayWorkflowInfo(workflowsData: WorkflowData[]) {
           <div class="stat-card">
             <div class="stat-label">Data Points</div>
             <div class="stat-value">${data.lastSets.length}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Latest Started At</div>
+            <div class="stat-value" style="font-size: 14px;">${startedAt}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Latest Ended At</div>
+            <div class="stat-value" style="font-size: 14px;">${endedAt}</div>
           </div>
         </div>
       </div>
