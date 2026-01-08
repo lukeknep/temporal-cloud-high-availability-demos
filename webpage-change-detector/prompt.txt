@@ -1,0 +1,11 @@
+Please create a simple app using Temporal Workflows in the `/temporal` directory in Typescript.
+It should include code for a Workflow, an Activity, and a Worker.
+It should be configured to connect to Temporal Cloud via the info stored in `config.json`
+The app should monitor for changes to webpage content over time.
+Each Workflow should be started with the parameters in `types.ts`. The parameters have a url to monitor and an internal for how frequently to monitor it.
+The Workflow should get the current content of the webpage (via an Activity) and hash it to store internally.
+If the content of the webpage is different from the last time that the Workflow checked it, then the Workflow should update its timestamp of the last time the webpage content changed.
+The Workflow should also store the latency for the reaching url each time it checks the content.
+The Workflow should have a Query that returns the info specified in `types.ts`.
+After each check, the Workflow should sleep for the interval specified in the parameters.
+I should be able to run multiple Workflows for different URLs.
