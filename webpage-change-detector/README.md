@@ -50,7 +50,7 @@ temporal workflow list \
 
 If you haven't used this Namesapce before, that command will probably return nothing (anti-climactic, I know)  That's ok. We just want to check that it succeeds and doesn't show an error.
 
-Now start a Workflow. This command starts one that pings AWS us-east-1.
+Now start a Workflow. This command starts one that checks the Federal Reserve's news release website for changes:
 
 ```
 temporal workflow start \
@@ -59,11 +59,11 @@ temporal workflow start \
   --api-key "$API_KEY" \
   --task-queue webpage-change-detector \
   --type webpageChangeDetectorWorkflow \
-  --workflow-id test \
+  --workflow-id fed \
   --input '{
-    "id": "test",
-    "url": "https://s3.us-east-1.amazonaws.com",
-    "sleepInterval": 10
+    "id": "fed",
+    "url": "https://www.federalreserve.gov/newsevents.htm",
+    "sleepInterval": 20
   }'
 ```
 
@@ -107,21 +107,21 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
 
 1. Start Workflows to monitor the latency for several different regions:
 
-  * AWS us-east-1 (same as above, skip if you already have it running)
+  * AWS us-east-1
 
   ```
   temporal workflow start \
-  --namespace "$NAMESPACE" \
-  --address "$ADDRESS" \
-  --api-key "$API_KEY" \
-  --task-queue webpage-change-detector \
-  --type webpageChangeDetectorWorkflow \
-  --workflow-id us-east-1 \
-  --input '{
-    "id": "us-east-1",
-    "url": "https://s3.us-east-1.amazonaws.com",
-    "sleepInterval": 10
-  }'
+    --namespace "$NAMESPACE" \
+    --address "$ADDRESS" \
+    --api-key "$API_KEY" \
+    --task-queue webpage-change-detector \
+    --type webpageChangeDetectorWorkflow \
+    --workflow-id ha-demo-us-east-1 \
+    --input '{
+      "id": "ha-demo-us-east-1",
+      "url": "https://ha-demo-us-east-1.s3.amazonaws.com/hello.txt",
+      "sleepInterval": 10
+    }'
   ```
 
   * AWS us-west-2 
@@ -133,9 +133,9 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
   --api-key "$API_KEY" \
   --task-queue webpage-change-detector \
   --type webpageChangeDetectorWorkflow \
-  --workflow-id us-west-2 \
+  --workflow-id ha-demo-us-west-2 \
   --input '{
-    "id": "us-west-2",
+    "id": "ha-demo-us-west-2",
     "url": "https://s3.us-west-2.amazonaws.com",
     "sleepInterval": 10
   }'
@@ -151,9 +151,9 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
   --api-key "$API_KEY" \
   --task-queue webpage-change-detector \
   --type webpageChangeDetectorWorkflow \
-  --workflow-id ap-northeast-1 \
+  --workflow-id ha-demo-ap-northeast-1 \
   --input '{
-    "id": "ap-northeast-1",
+    "id": "ha-demo-ap-northeast-1",
     "url": "https://s3.ap-northeast-1.amazonaws.com",
     "sleepInterval": 10
   }'
@@ -179,19 +179,19 @@ Since we can't actually bring down AWS in that region, we will instead 1. crash 
     --namespace "$NAMESPACE" \
     --address "$ADDRESS" \
     --api-key "$API_KEY" \
-    --workflow-id ap-northeast-1
+    --workflow-id ha-demo-ap-northeast-1
   
   temporal workflow terminate --reason "cleanup" \
     --namespace "$NAMESPACE" \
     --address "$ADDRESS" \
     --api-key "$API_KEY" \
-    --workflow-id us-east-1
+    --workflow-id ha-demo-us-east-1
 
   temporal workflow terminate --reason "cleanup" \
     --namespace "$NAMESPACE" \
     --address "$ADDRESS" \
     --api-key "$API_KEY" \
-    --workflow-id us-west-2
+    --workflow-id ha-demo-us-west-2
   ```
 
 ## Troubleshooting

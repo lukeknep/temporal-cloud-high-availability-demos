@@ -5,10 +5,10 @@ import { WCDWorkflowParams, WCDQueryResult, LatencyEntry } from '../types';
 const { fetchWebpageContent } = proxyActivities<typeof activities>({
   startToCloseTimeout: '1 minute',
   retry: {
-    initialInterval: '5s',
+    initialInterval: '10s',
     maximumInterval: '30s',
     backoffCoefficient: 2,
-    maximumAttempts: 3,
+    maximumAttempts: 2,
   },
 });
 
@@ -24,7 +24,7 @@ export async function webpageChangeDetectorWorkflow(
   let latencies: LatencyEntry[] = [];
   let lastContentHash: string | null = null;
 
-  // Set up query handler
+  // Set up the Query, for visibility
   setHandler(getStatusQuery, (): WCDQueryResult => {
     return {
       id,
@@ -35,46 +35,33 @@ export async function webpageChangeDetectorWorkflow(
     };
   });
 
-  // Main monitoring loop
+  // Monitoring loop
   while (true) {
     try {
       // Fetch webpage content
       const result = await fetchWebpageContent(url);
-
-      // Update last checked timestamp
-      const checkTimestamp = new Date().toISOString();
-      contentLastCheckedAt = checkTimestamp;
-
-      // Store latency with timestamp (keep max 100 entries)
+      
+      // Check if content has changed
+      if (result.contentHash !== lastContentHash) {
+        lastContentHash = result.contentHash;
+        contentLastChangedAt = result.timestamp;
+        // In the future, you could add a notification / email alert here, write to a database, etc.
+      }
+      
+      // Record the latency and timestamp
+      contentLastCheckedAt = result.timestamp;
       latencies.push({
         latency: result.latencyMs,
-        timestamp: checkTimestamp
+        timestamp: result.timestamp
       });
       if (latencies.length > 100) {
         latencies = latencies.slice(-100);
       }
 
-      // Get the content hash from the activity result
-      const currentContentHash = result.contentHash;
-
-      // Check if content has changed
-      if (lastContentHash === null) {
-        // First check - initialize
-        lastContentHash = currentContentHash;
-        contentLastChangedAt = new Date().toISOString();
-      } else if (currentContentHash !== lastContentHash) {
-        // Content has changed
-        lastContentHash = currentContentHash;
-        contentLastChangedAt = new Date().toISOString();
-      }
-      // If hashes match, content hasn't changed - don't update contentLastChangedAt
-
     } catch (error) {
-      // Log error but continue monitoring
       console.error(`Error checking ${url}:`, error);
     }
 
-    // Sleep for the specified interval (convert seconds to milliseconds)
     await sleep(sleepInterval * 1000);
   }
 }

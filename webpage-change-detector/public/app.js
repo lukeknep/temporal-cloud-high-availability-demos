@@ -51,6 +51,27 @@ async function fetchWorkflowStats(workflowId) {
         throw error;
     }
 }
+function timeSince(lastChangedAt) {
+    const changeTime = new Date(lastChangedAt).getTime();
+    const now = Date.now();
+    const diffMs = now - changeTime;
+    const diffSecs = Math.floor(diffMs / 1000);
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays > 0) {
+        return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+    }
+    else if (diffHours > 0) {
+        return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    }
+    else if (diffMins > 0) {
+        return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+    }
+    else {
+        return `${diffSecs} second${diffSecs !== 1 ? 's' : ''} ago`; //'Just now';
+    }
+}
 function displayWorkflowInfo(workflowsData) {
     const listDiv = document.getElementById('workflowList');
     if (!listDiv)
@@ -69,25 +90,12 @@ function displayWorkflowInfo(workflowsData) {
             : 'Never';
         // Calculate time since last change
         let timeSinceChange = 'N/A';
+        let timeSinceCheck = 'N/A';
         if (data.contentLastChangedAt) {
-            const changeTime = new Date(data.contentLastChangedAt).getTime();
-            const now = Date.now();
-            const diffMs = now - changeTime;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMins / 60);
-            const diffDays = Math.floor(diffHours / 24);
-            if (diffDays > 0) {
-                timeSinceChange = `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-            }
-            else if (diffHours > 0) {
-                timeSinceChange = `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-            }
-            else if (diffMins > 0) {
-                timeSinceChange = `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
-            }
-            else {
-                timeSinceChange = 'Just now';
-            }
+            timeSinceChange = timeSince(data.contentLastChangedAt);
+        }
+        if (data.contentLastCheckedAt) {
+            timeSinceCheck = timeSince(data.contentLastCheckedAt);
         }
         const avgLatency = data.latencies.length > 0
             ? (data.latencies.reduce((sum, entry) => sum + entry.latency, 0) / data.latencies.length).toFixed(2)
@@ -110,16 +118,21 @@ function displayWorkflowInfo(workflowsData) {
             <div class="stat-value" style="font-size: 14px;">${lastChecked}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Total Checks</div>
-            <div class="stat-value">${data.latencies.length}</div>
+            <div class="stat-label">Time Last Checked</div>
+            <div class="stat-value" style="font-size: 16px;">${timeSinceCheck}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Avg Check Latency</div>
-            <div class="stat-value">${avgLatency} ms</div>
+            <div class="stat-label"># Times Checked</div>
+            <div class="stat-value">${data.latencies.length}</div>
           </div>
+          
         </div>
       </div>
     `;
+        // <div class="stat-card">
+        //         <div class="stat-label">Avg Latency</div>
+        //         <div class="stat-value">${avgLatency} ms</div>
+        //       </div>
     });
     listDiv.innerHTML = html;
     listDiv.style.display = 'block';

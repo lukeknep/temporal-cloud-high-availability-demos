@@ -4,10 +4,14 @@ import { createHash } from 'crypto';
 export interface FetchWebpageResult {
   contentHash: string;
   latencyMs: number;
+  timestamp: string;
 }
 
 export async function fetchWebpageContent(url: string): Promise<FetchWebpageResult> {
   try {
+    // Capture the timestamp when the check begins
+    const checkTimestamp = new Date().toISOString();
+
     // First request: Measure ping latency with a HEAD request
     const pingStartTime = Date.now();
 
@@ -33,6 +37,7 @@ export async function fetchWebpageContent(url: string): Promise<FetchWebpageResu
     return {
       contentHash,
       latencyMs,
+      timestamp: checkTimestamp,
     };
   } catch (error) {
     throw new Error(`Failed to fetch ${url}: ${error instanceof Error ? error.message : String(error)}`);
