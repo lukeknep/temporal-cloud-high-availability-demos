@@ -1,24 +1,29 @@
-# Webpage Change Monitor - HA Failover Demo
+# Webpage Change Detector - High Availability Failover Demo
 
-## Get started
+This demo application showcases Temporal's multi-region failover capabilities using a webpage change detection workflow. The application continuously monitors webpages for content changes and records latency metrics, demonstrating how Temporal Workflows maintain state and continue execution seamlessly during region failovers.
+
+## Get Started
 
 ### Setup
 
-First, select a Namespace with Multi-region or Multi-cloud Replication turned on (that is, with a replica in a different region or cloud).
+First, select a Namespace with Multi-region or Multi-cloud Replication enabled (that is, with a replica in a different region or cloud).
 
-If you don't already have such a Namespace, then you can create one, or add a replica to an existing one.
+If you don't already have such a Namespace, you can create one or add a replica to an existing one.
 
-This demo uses API keys. Create an API key for your Namespace and save it.
+This demo uses API keys. Create an API key for your Namespace and save it securely.
 
-Then, in the `latency-monitor` directory:
+Then, in the `webpage-change-detector` directory:
 
-1. `npm i` to install dependencies
+1. Install dependencies: `npm i`
 
-1. copy example.config.json to config.json: `cp example.config.json config.json`
+1. Copy the example configuration file: `cp example.config.json config.json`
 
-1. Edit `config.json` with your app's values for your Namespace (ID, Endpoint, API key) and your SMTP Gmail info
+1. Edit `config.json` with your Temporal Cloud credentials:
+   - `temporal.namespace`: Your Namespace ID
+   - `temporal.address`: Your Namespace endpoint
+   - `temporal.apiKey`: Your API key
 
-1. Start a Worker with `npm run worker`
+1. Start a Worker: `npm run worker`
 
 Then run Workflows on it! A quick test is below:
 
@@ -48,7 +53,7 @@ temporal workflow list \
   --api-key "$API_KEY"
 ```
 
-If you haven't used this Namesapce before, that command will probably return nothing (anti-climactic, I know)  That's ok. We just want to check that it succeeds and doesn't show an error.
+If you haven't used this Namespace before, that command will probably return nothing (anti-climactic, I know). That's ok. We just want to check that it succeeds and doesn't show an error.
 
 Now start a Workflow. This command starts one that checks the Federal Reserve's news release website for changes:
 
@@ -67,7 +72,7 @@ temporal workflow start \
   }'
 ```
 
-You can check the Worker tab to look for any errors. Then, checkthe web app to visualize results!
+You can check the Worker logs for any errors. Then, check the web app to visualize results!
 
 If you hit errors / bugs and make changes, I recommend canceling that Workflow and running a new one, incrementing the last character of the Workflow ID to `B`, then `C`, etc. 
 
@@ -78,7 +83,7 @@ temporal workflow cancel \
   --namespace "$NAMESPACE" \
   --address "$ADDRESS" \
   --api-key "$API_KEY" \
-  --workflow-id us-east-1-A
+  --workflow-id fed
 ```
 
 
@@ -95,17 +100,17 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
 
   * Launch the VM
 
-  * Add `git` and `npm` to the VM, if not already installed. For Amazon Lightsail, it will already have `npm` but you will need to install git: `sudo apt update & sudo apt install git-all`
+  * Add `git` and `npm` to the VM, if not already installed. For Amazon Lightsail, it will already have `npm` but you will need to install git: `sudo apt update && sudo apt install git-all`
 
-  * `git clone` this repo and `cd` into latency monitor directory
+  * `git clone` this repo and `cd` into the `webpage-change-detector` directory
 
   * `npm i`
 
   * Copy your `config.json` to it (e.g., `vi config.json`, then `i` for insert, then `Cmd + V` to paste the content)
 
-  * 
+  * Start the Worker: `npm run worker`
 
-1. Start Workflows to monitor the latency for several different regions:
+1. Start Workflows to monitor several different webpages (hosted in different regions):
 
   * AWS us-east-1
 
@@ -159,28 +164,41 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
   }'
   ```
 
-1. Simulate a cloud region outage in the active region. 
-Since we can't actually bring down AWS in that region, we will instead 1. crash the worker, 2. initiate the failover command for the Namespace
-  
-   1. crash the worker: (TODO: Find it's pid and `sudo kill -9` the pid)
+1. Simulate a cloud region outage in the active region. Since we can't actually bring down AWS in that region, we will instead (1) crash the Worker and (2) initiate the failover command for the Namespace:
 
-   2. initiate the Namespace failover: (TODO)
+   1. Crash the Worker: Find its PID with `ps aux | grep worker` and kill it with `sudo kill -9 <PID>`
 
-1. Launch a Worker in the replica's region (TODO)
+   2. Initiate the Namespace failover:
+   ```
+   tcld namespace failover \
+     --namespace "$NAMESPACE" \
+     --cluster <replica-cluster-name>
+   ```
+   Replace `<replica-cluster-name>` with the name of your replica cluster (e.g., `us-west-2-aws`)
 
-1. Observe that Workflows continue to run, and that their state was preserved on the failover (TODO)
+1. Launch a Worker in the replica's region:
+   * SSH into the VM in the replica region
+   * Follow the same setup steps from step 1 to clone the repo, install dependencies, and configure `config.json`
+   * Start the Worker: `npm run worker`
+
+1. Observe that Workflows continue to run and that their state was preserved during the failover:
+   * Check the Temporal Cloud Web UI to see Workflow history
+   * Monitor the web app to see that webpage checks continue without interruption
+   * Note that latency values may change as requests now originate from the new region
 
 ## Cleanup
 
-1. Terminate the Workflows
-  
+After completing the demo:
+
+1. Terminate all running Workflows:
+
   ```
   temporal workflow terminate --reason "cleanup" \
     --namespace "$NAMESPACE" \
     --address "$ADDRESS" \
     --api-key "$API_KEY" \
     --workflow-id ha-demo-ap-northeast-1
-  
+
   temporal workflow terminate --reason "cleanup" \
     --namespace "$NAMESPACE" \
     --address "$ADDRESS" \
@@ -194,13 +212,17 @@ Since we can't actually bring down AWS in that region, we will instead 1. crash 
     --workflow-id ha-demo-us-west-2
   ```
 
+2. Stop the Workers running on your VMs
+
+3. Shut down or terminate your VMs to avoid ongoing charges
+
 ## Troubleshooting
 
-* "I've changed the Wrokflow code but I already have several Workflows in progress."
+* "I've changed the Workflow code but I already have several Workflows in progress."
   > An easy way to get around this is to terminate the Workflows and then restart the Worker process.
 
 * "Non-deterministic Workflow error"
   > You may have changed the Workflow code while Workflows were running. Try the step above.
 
 * `Error: Cannot find module '../lib/tsc.js'`
-   Try removing the node_modules directory and running `npm i` again.
+  > This is usually caused by corrupted dependencies. Remove the `node_modules` directory and reinstall: `rm -rf node_modules && npm i`
