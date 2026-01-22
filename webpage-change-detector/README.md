@@ -136,7 +136,7 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
   --workflow-id ha-demo-us-west-2 \
   --input '{
     "id": "ha-demo-us-west-2",
-    "url": "https://s3.us-west-2.amazonaws.com",
+    "url": "https://ha-demo-us-west-2.s3.amazonaws.com/hello.txt",
     "sleepInterval": 10
   }'
   ```
@@ -154,7 +154,7 @@ Prereq: You will need VMs to run the Workers. I recommend two VMs in different r
   --workflow-id ha-demo-ap-northeast-1 \
   --input '{
     "id": "ha-demo-ap-northeast-1",
-    "url": "https://s3.ap-northeast-1.amazonaws.com",
+    "url": "https://ha-demo-ap-northeast-1.s3.amazonaws.com/hello.txt",
     "sleepInterval": 10
   }'
   ```

@@ -3,8 +3,8 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { Connection, Client } from '@temporalio/client';
-import { WCDQueryResult } from '../types';
-import { getStatusQuery } from '../temporal/workflows'
+import { WCDQueryResult, WCDWorkflowParams } from '../types';
+import { getStatusQuery, webpageChangeDetectorWorkflow } from '../temporal/workflows'
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -58,6 +58,48 @@ app.get('/api/workflows/:workflowId/stats', async (req, res) => {
     console.error('Error querying workflow:', error);
     res.status(500).json({
       error: 'Failed to query workflow',
+      message: error.message
+    });
+  }
+});
+
+// API endpoint to start a new workflow
+app.post('/api/workflows/start', async (req, res) => {
+  try {
+    const { id, url, sleepInterval } = req.body as WCDWorkflowParams;
+
+    // Validate input
+    if (!id || !url || !sleepInterval) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        message: 'id, url, and sleepInterval are required'
+      });
+    }
+
+    if (typeof sleepInterval !== 'number' || sleepInterval <= 0) {
+      return res.status(400).json({
+        error: 'Invalid sleepInterval',
+        message: 'sleepInterval must be a positive number'
+      });
+    }
+
+    // Start the workflow
+    const handle = await temporalClient.workflow.start(webpageChangeDetectorWorkflow, {
+      taskQueue: 'webpage-change-detector',
+      workflowId: id,
+      args: [{ id, url, sleepInterval }],
+      workflowTaskTimeout: '120s',
+    });
+
+    res.json({
+      success: true,
+      workflowId: handle.workflowId,
+      message: 'Workflow started successfully'
+    });
+  } catch (error: any) {
+    console.error('Error starting workflow:', error);
+    res.status(500).json({
+      error: 'Failed to start workflow',
       message: error.message
     });
   }

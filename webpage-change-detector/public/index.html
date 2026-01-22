@@ -187,6 +187,7 @@
             background: #f5f5f5;
             padding: 15px;
             border-radius: 6px;
+            transition: background-color 0.3s ease;
         }
 
         .stat-label {
@@ -200,6 +201,135 @@
             font-size: 24px;
             font-weight: bold;
             color: #333;
+        }
+
+        /* Time-based color highlighting */
+        .time-highlight-recent {
+            background: #4CAF50 !important;
+        }
+
+        .time-highlight-recent .stat-label,
+        .time-highlight-recent .stat-value {
+            color: white !important;
+        }
+
+        .time-highlight-hour {
+            background: #66BB6A !important;
+        }
+
+        .time-highlight-hour .stat-label,
+        .time-highlight-hour .stat-value {
+            color: white !important;
+        }
+
+        .time-highlight-day {
+            background: #2E7D32 !important;
+        }
+
+        .time-highlight-day .stat-label,
+        .time-highlight-day .stat-value {
+            color: white !important;
+        }
+
+        .time-highlight-old {
+            background: #1B5E20 !important;
+        }
+
+        .time-highlight-old .stat-label,
+        .time-highlight-old .stat-value {
+            color: white !important;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.2s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            max-width: 500px;
+            animation: slideDown 0.3s;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            margin-bottom: 20px;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            color: #333;
+            font-size: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        .form-group .help-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 25px;
+        }
+
+        .modal-footer button {
+            min-width: 100px;
         }
     </style>
 </head>
@@ -220,6 +350,7 @@
                 </div>
                 <div class="button-group">
                     <button class="btn-primary" onclick="fetchAndUpdateChart()">Load Workflows</button>
+                    <button class="btn-secondary" onclick="openNewWorkflowModal()">New Workflow</button>
                     <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
                         <input type="checkbox" id="autoRefreshCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
                         <span>Auto-Refresh (10s)</span>
@@ -235,6 +366,36 @@
 
         <div class="chart-container">
             <canvas id="latencyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- New Workflow Modal -->
+    <div id="newWorkflowModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Start New Workflow</h2>
+            </div>
+            <form id="newWorkflowForm">
+                <div class="form-group">
+                    <label for="workflowId">Workflow ID</label>
+                    <input type="text" id="workflowId" name="id" required>
+                    <div class="help-text">A unique identifier for this workflow</div>
+                </div>
+                <div class="form-group">
+                    <label for="workflowUrl">URL to Monitor</label>
+                    <input type="text" id="workflowUrl" name="url" required placeholder="https://example.com">
+                    <div class="help-text">The webpage URL to monitor for changes</div>
+                </div>
+                <div class="form-group">
+                    <label for="workflowSleepInterval">Check Interval (seconds)</label>
+                    <input type="number" id="workflowSleepInterval" name="sleepInterval" value="10" min="1" required>
+                    <div class="help-text">How often to check the webpage (minimum 1 second)</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-danger" onclick="closeNewWorkflowModal()">Cancel</button>
+                    <button type="submit" class="btn-primary">Start Workflow</button>
+                </div>
+            </form>
         </div>
     </div>
 

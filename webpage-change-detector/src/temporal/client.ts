@@ -44,6 +44,7 @@ async function run() {
       taskQueue: 'webpage-change-detector',
       workflowId,
       args: [workflowParams],
+      workflowTaskTimeout: '120s',
     });
 
     console.log(`Started workflow: ${workflowId}`);

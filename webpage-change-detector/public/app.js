@@ -1,6 +1,8 @@
 "use strict";
 let chart = null;
 let autoRefreshInterval = null;
+let timeUpdateInterval = null;
+let currentWorkflowsData = [];
 // Color palette for multiple workflows
 const colors = [
     '#4CAF50',
@@ -72,6 +74,101 @@ function timeSince(lastChangedAt) {
         return `${diffSecs} second${diffSecs !== 1 ? 's' : ''} ago`; //'Just now';
     }
 }
+// Determine the color class based on time elapsed
+function getTimeColorClass(timestamp) {
+    if (!timestamp)
+        return '';
+    const changeTime = new Date(timestamp).getTime();
+    const now = Date.now();
+    const diffMs = now - changeTime;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    // Less than 1 minute: bright green
+    if (diffMins < 1) {
+        return 'time-highlight-recent';
+    }
+    // Less than 1 hour: green
+    else if (diffHours < 1) {
+        return 'time-highlight-hour';
+    }
+    // Less than 24 hours: darker green
+    else if (diffHours < 24) {
+        return 'time-highlight-day';
+    }
+    // 24 hours or more: very dark green
+    else {
+        return 'time-highlight-old';
+    }
+}
+// Update the time-since displays every second
+function updateTimeDisplays() {
+    // Update all "Time Since Change" displays
+    const timeSinceChangeElements = document.querySelectorAll('.time-since-change');
+    timeSinceChangeElements.forEach((element) => {
+        const timestamp = element.getAttribute('data-timestamp');
+        if (timestamp) {
+            element.textContent = timeSince(timestamp);
+            // Update the color class on the parent stat-card
+            const parentCard = element.closest('.time-card-since-change');
+            if (parentCard) {
+                // Remove all existing time highlight classes
+                parentCard.classList.remove('time-highlight-recent', 'time-highlight-hour', 'time-highlight-day', 'time-highlight-old');
+                // Add the new color class
+                const colorClass = getTimeColorClass(timestamp);
+                if (colorClass) {
+                    parentCard.classList.add(colorClass);
+                }
+            }
+        }
+    });
+    // Update all "Last Changed" displays
+    const lastChangedElements = document.querySelectorAll('.last-changed-value');
+    lastChangedElements.forEach((element) => {
+        const timestamp = element.getAttribute('data-timestamp');
+        if (timestamp) {
+            // No need to update text content for this one - it shows the date/time
+            // Just update the color class on the parent stat-card
+            const parentCard = element.closest('.time-card-last-changed');
+            if (parentCard) {
+                // Remove all existing time highlight classes
+                parentCard.classList.remove('time-highlight-recent', 'time-highlight-hour', 'time-highlight-day', 'time-highlight-old');
+                // Add the new color class
+                const colorClass = getTimeColorClass(timestamp);
+                if (colorClass) {
+                    parentCard.classList.add(colorClass);
+                }
+            }
+        }
+    });
+    // Update all "Time Since Check" displays (text only, no color)
+    const timeSinceCheckElements = document.querySelectorAll('.time-since-check');
+    timeSinceCheckElements.forEach((element) => {
+        const timestamp = element.getAttribute('data-timestamp');
+        if (timestamp) {
+            element.textContent = timeSince(timestamp);
+        }
+    });
+}
+// Start the interval to update time displays
+function startTimeUpdates() {
+    // Clear any existing interval
+    if (timeUpdateInterval !== null) {
+        clearInterval(timeUpdateInterval);
+    }
+    // Update immediately
+    updateTimeDisplays();
+    // Then update every second
+    timeUpdateInterval = window.setInterval(() => {
+        updateTimeDisplays();
+    }, 1000);
+}
+// Stop the time update interval
+function stopTimeUpdates() {
+    if (timeUpdateInterval !== null) {
+        clearInterval(timeUpdateInterval);
+        timeUpdateInterval = null;
+    }
+}
 function displayWorkflowInfo(workflowsData) {
     const listDiv = document.getElementById('workflowList');
     if (!listDiv)
@@ -80,6 +177,8 @@ function displayWorkflowInfo(workflowsData) {
         listDiv.style.display = 'none';
         return;
     }
+    // Store the workflows data for live updates
+    currentWorkflowsData = workflowsData;
     let html = '<h2 style="margin-bottom: 15px;">Webpage Change Status</h2>';
     workflowsData.forEach(({ workflowId, data }) => {
         const lastChecked = data.contentLastCheckedAt
@@ -100,18 +199,20 @@ function displayWorkflowInfo(workflowsData) {
         const avgLatency = data.latencies.length > 0
             ? (data.latencies.reduce((sum, entry) => sum + entry.latency, 0) / data.latencies.length).toFixed(2)
             : 'N/A';
+        // Get color classes for time-based highlighting
+        const changeColorClass = data.contentLastChangedAt ? getTimeColorClass(data.contentLastChangedAt) : '';
         html += `
-      <div class="workflow-item">
+      <div class="workflow-item" data-workflow-id="${workflowId}">
         <h3>${workflowId}</h3>
         <p><strong>URL:</strong> ${data.url}</p>
         <div class="stats-grid">
-          <div class="stat-card">
+          <div class="stat-card time-card-last-changed ${changeColorClass}">
             <div class="stat-label">Last Changed</div>
-            <div class="stat-value" style="font-size: 14px;">${lastChanged}</div>
+            <div class="stat-value last-changed-value" style="font-size: 14px;" data-timestamp="${data.contentLastChangedAt || ''}">${lastChanged}</div>
           </div>
-          <div class="stat-card">
+          <div class="stat-card time-card-since-change ${changeColorClass}">
             <div class="stat-label">Time Since Change</div>
-            <div class="stat-value" style="font-size: 16px;">${timeSinceChange}</div>
+            <div class="stat-value time-since-change" style="font-size: 16px;" data-timestamp="${data.contentLastChangedAt || ''}">${timeSinceChange}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Last Checked</div>
@@ -119,13 +220,13 @@ function displayWorkflowInfo(workflowsData) {
           </div>
           <div class="stat-card">
             <div class="stat-label">Time Last Checked</div>
-            <div class="stat-value" style="font-size: 16px;">${timeSinceCheck}</div>
+            <div class="stat-value time-since-check" style="font-size: 16px;" data-timestamp="${data.contentLastCheckedAt || ''}">${timeSinceCheck}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label"># Times Checked</div>
             <div class="stat-value">${data.latencies.length}</div>
           </div>
-          
+
         </div>
       </div>
     `;
@@ -136,6 +237,8 @@ function displayWorkflowInfo(workflowsData) {
     });
     listDiv.innerHTML = html;
     listDiv.style.display = 'block';
+    // Start the live time update if not already running
+    startTimeUpdates();
 }
 function createChart(workflowsData) {
     const canvas = document.getElementById('latencyChart');
@@ -155,9 +258,11 @@ function createChart(workflowsData) {
         const { data, workflowId } = workflow;
         // Create data points for latencies with timestamps
         if (data.latencies.length > 0) {
+            // Only show the most recent 20 latencies
+            const recentLatencies = data.latencies.slice(-20);
             const latencyDataset = {
                 label: `${workflowId} - Check Latency`,
-                data: data.latencies.map((entry) => ({
+                data: recentLatencies.map((entry) => ({
                     x: new Date(entry.timestamp).getTime(),
                     y: entry.latency
                 })),
@@ -320,6 +425,48 @@ function loadWorkflowIds() {
         }
     }
 }
+// Modal functions
+function openNewWorkflowModal() {
+    const modal = document.getElementById('newWorkflowModal');
+    if (modal) {
+        modal.style.display = 'block';
+    }
+}
+function closeNewWorkflowModal() {
+    const modal = document.getElementById('newWorkflowModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    // Reset form
+    const form = document.getElementById('newWorkflowForm');
+    if (form) {
+        form.reset();
+    }
+}
+// Expose functions globally for onclick handlers
+window.openNewWorkflowModal = openNewWorkflowModal;
+window.closeNewWorkflowModal = closeNewWorkflowModal;
+// Start new workflow
+async function startNewWorkflow(id, url, sleepInterval) {
+    try {
+        const response = await fetch('/api/workflows/start', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ id, url, sleepInterval }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.message || 'Failed to start workflow');
+        }
+        return result;
+    }
+    catch (error) {
+        console.error('Error starting workflow:', error);
+        throw error;
+    }
+}
 // Allow Enter key to trigger load
 document.addEventListener('DOMContentLoaded', () => {
     const input = document.getElementById('workflowIds');
@@ -341,6 +488,52 @@ document.addEventListener('DOMContentLoaded', () => {
         autoRefreshCheckbox.addEventListener('change', (e) => {
             const target = e.target;
             toggleAutoRefresh(target.checked);
+        });
+    }
+    // Handle new workflow form submission
+    const newWorkflowForm = document.getElementById('newWorkflowForm');
+    if (newWorkflowForm) {
+        newWorkflowForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const id = formData.get('id');
+            const url = formData.get('url');
+            const sleepInterval = parseInt(formData.get('sleepInterval'));
+            try {
+                hideError();
+                const result = await startNewWorkflow(id, url, sleepInterval);
+                // Close modal
+                closeNewWorkflowModal();
+                // Show success message
+                alert(`Workflow "${result.workflowId}" started successfully!`);
+                // Add the new workflow ID to the input field and refresh
+                const workflowIdsInput = document.getElementById('workflowIds');
+                if (workflowIdsInput) {
+                    const currentIds = workflowIdsInput.value
+                        .split(',')
+                        .map(id => id.trim())
+                        .filter(id => id.length > 0);
+                    if (!currentIds.includes(result.workflowId)) {
+                        currentIds.push(result.workflowId);
+                        workflowIdsInput.value = currentIds.join(', ');
+                        saveWorkflowIds();
+                    }
+                }
+                // Refresh the chart
+                fetchAndUpdateChart();
+            }
+            catch (error) {
+                showError(`Failed to start workflow: ${error.message}`);
+            }
+        });
+    }
+    // Close modal when clicking outside of it
+    const modal = document.getElementById('newWorkflowModal');
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeNewWorkflowModal();
+            }
         });
     }
 });
