@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Temporal Application: Webpage Change Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 32px;
+        }
+
+        .controls {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .controls-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 20px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .controls-header:hover {
+            background: #fafafa;
+            border-radius: 8px;
+        }
+
+        .controls-header h2 {
+            margin: 0;
+            font-size: 16px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .controls-toggle {
+            font-size: 18px;
+            color: #888;
+            transition: transform 0.2s;
+        }
+
+        .controls-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .controls-body {
+            padding: 0 20px 20px;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            max-height: 500px;
+            opacity: 1;
+        }
+
+        .controls-body.collapsed {
+            max-height: 0;
+            padding: 0 20px;
+            opacity: 0;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: flex-start;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        .btn-primary {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #45a049;
+        }
+
+        .btn-secondary {
+            background: #2196F3;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #0b7dda;
+        }
+
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #da190b;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        canvas {
+            max-height: 500px;
+        }
+
+        .workflow-list {
+            margin-bottom: 20px;
+        }
+
+        .workflow-list h2 {
+            margin-bottom: 16px;
+            color: #333;
+        }
+
+        .workflow-cards {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .workflow-card {
+            width: 300px;
+            max-width: 300px;
+            border-radius: 12px;
+            padding: 20px;
+            color: white;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .workflow-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+        }
+
+        .card-url {
+            font-size: 18px;
+            font-weight: 700;
+            word-break: break-all;
+            line-height: 1.3;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.15);
+        }
+
+        .card-url a {
+            color: inherit;
+            text-decoration: none;
+        }
+
+        .card-url a:hover {
+            text-decoration: underline;
+        }
+
+        .card-times {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .card-time-block {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .card-time-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.8;
+        }
+
+        .card-time-value {
+            font-size: 20px;
+            font-weight: 600;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.15);
+        }
+
+        .card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.25);
+            font-size: 12px;
+            opacity: 0.85;
+        }
+
+        .card-meta {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            border-left: 4px solid #c62828;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.2s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 10% auto;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            max-width: 500px;
+            animation: slideDown 0.3s;
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-50px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .modal-header {
+            margin-bottom: 20px;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            color: #333;
+            font-size: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        .form-group .help-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 25px;
+        }
+
+        .modal-footer button {
+            min-width: 100px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>My Temporal Application: Webpage Change Monitor</h1>
+
+        <div class="controls">
+            <div class="controls-header" onclick="toggleControls()">
+                <h2>Workflow Controls</h2>
+                <span id="controlsToggle" class="controls-toggle">&#9660;</span>
+            </div>
+            <div id="controlsBody" class="controls-body">
+                <div class="input-group">
+                    <div class="input-wrapper">
+                        <label for="workflowIds">Workflow IDs (comma-separated)</label>
+                        <input
+                            type="text"
+                            id="workflowIds"
+                            placeholder="workflow-1, workflow-2, workflow-3"
+                        >
+                        <div class="help-text">Enter one or more workflow IDs to monitor</div>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn-primary" onclick="fetchAndUpdateChart()">Load Workflows</button>
+                        <button class="btn-secondary" onclick="openNewWorkflowModal()">New Workflow</button>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+                            <input type="checkbox" id="autoRefreshCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
+                            <span>Auto-Refresh (1s)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="loading" class="loading" style="display: none;">Loading workflow data...</div>
+
+        <div class="workflow-list" id="workflowList" style="display: none;"></div>
+
+        <div class="chart-container">
+            <canvas id="latencyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- New Workflow Modal -->
+    <div id="newWorkflowModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Start New Workflow</h2>
+            </div>
+            <form id="newWorkflowForm">
+                <div class="form-group">
+                    <label for="workflowUrl">URL to Monitor</label>
+                    <input type="text" id="workflowUrl" name="url" required placeholder="https://example.com">
+                    <div class="help-text">The webpage URL to monitor for changes</div>
+                </div>
+                <div class="form-group">
+                    <label for="workflowSleepInterval">Check Interval</label>
+                    <select id="workflowSleepInterval" name="sleepInterval" required style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; background: white;">
+                        <option value="1">1 second</option>
+                        <option value="10" selected>10 seconds</option>
+                        <option value="60">60 seconds</option>
+                    </select>
+                    <div class="help-text">How often to check the webpage for changes</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-danger" onclick="closeNewWorkflowModal()">Cancel</button>
+                    <button type="submit" class="btn-primary">Start Workflow</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function toggleControls() {
+            var body = document.getElementById('controlsBody');
+            var toggle = document.getElementById('controlsToggle');
+            body.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        }
+    </script>
+    <script src="app.js"></script>
+</body>
+</html>

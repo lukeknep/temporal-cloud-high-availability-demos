@@ -1,0 +1,7 @@
+{
+  "temporal": {
+    "address": "localhost:7233",
+    "namespace": "default",
+    "apiKey": ""
+  }
+}
