@@ -11,6 +11,10 @@ async function run() {
 
   const { address, namespace, apiKey } = config.temporal;
 
+  if (!address || !namespace) {
+    throw new Error('Missing config: temporal.address and temporal.namespace must be set');
+  }
+
   // Connect to Temporal - supports both local (no TLS/API key) and Cloud
   const connection = await NativeConnection.connect({
     address,

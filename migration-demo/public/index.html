@@ -24,6 +24,91 @@
             margin: 0 auto;
         }
 
+        .layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        .main-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .sidebar {
+            width: 320px;
+            flex-shrink: 0;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 16px;
+            position: sticky;
+            top: 20px;
+        }
+
+        .sidebar h2 {
+            font-size: 16px;
+            color: #555;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }
+
+        .sidebar-namespace {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+
+        .sidebar-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .region-log {
+            max-height: 600px;
+            overflow-y: auto;
+            border-top: 1px solid #eee;
+            padding-top: 12px;
+        }
+
+        .region-log-entry {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 8px 0;
+            border-bottom: 1px solid #f3f3f3;
+            font-size: 13px;
+        }
+
+        .region-log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .region-log-entry .region {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .region-log-entry .timestamp {
+            font-size: 11px;
+            color: #888;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        .region-log-entry.error .region {
+            color: #c62828;
+        }
+
+        .region-log-empty {
+            color: #aaa;
+            font-size: 13px;
+            text-align: center;
+            padding: 12px 0;
+        }
+
         h1 {
             color: #333;
             margin-bottom: 30px;
@@ -381,6 +466,9 @@
     <div class="container">
         <h1>My Temporal Application: Webpage Change Monitor</h1>
 
+        <div class="layout">
+        <div class="main-content">
+
         <div class="controls">
             <div class="controls-header" onclick="toggleControls()">
                 <h2>Workflow Controls</h2>
@@ -406,6 +494,9 @@
                         </label>
                     </div>
                 </div>
+                <div style="margin-top: 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <button type="button" id="seedButton" class="btn-secondary" onclick="seedStartingState()" style="padding: 6px 12px; font-size: 13px;">Seed starting state</button>
+                </div>
             </div>
         </div>
 
@@ -417,6 +508,25 @@
         <div class="chart-container">
             <canvas id="latencyChart"></canvas>
         </div>
+
+        </div><!-- /main-content -->
+
+        <aside class="sidebar">
+            <h2>Namespace Region</h2>
+            <div class="sidebar-namespace" id="sidebarNamespace">Loading...</div>
+            <div class="sidebar-controls">
+                <button class="btn-primary" id="checkRegionButton" onclick="checkRegion()">Check Region</button>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+                    <input type="checkbox" id="regionAutoRefreshCheckbox" style="width: 18px; height: 18px; cursor: pointer;">
+                    <span>Auto-refresh (1s)</span>
+                </label>
+            </div>
+            <div class="region-log" id="regionLog">
+                <div class="region-log-empty">No checks yet</div>
+            </div>
+        </aside>
+
+        </div><!-- /layout -->
     </div>
 
     <!-- New Workflow Modal -->
@@ -426,6 +536,11 @@
                 <h2>Start New Workflow</h2>
             </div>
             <form id="newWorkflowForm">
+                <div class="form-group">
+                    <label for="workflowId">Workflow ID</label>
+                    <input type="text" id="workflowId" name="id" required placeholder="my-workflow-1">
+                    <div class="help-text">Unique ID used for the Workflow (and embedded in its payload)</div>
+                </div>
                 <div class="form-group">
                     <label for="workflowUrl">URL to Monitor</label>
                     <input type="text" id="workflowUrl" name="url" required placeholder="https://example.com">

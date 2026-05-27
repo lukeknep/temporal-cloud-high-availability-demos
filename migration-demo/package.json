@@ -1,8 +1,8 @@
 {
   "dependencies": {
-    "@temporalio/client": "^1.9.0",
-    "@temporalio/worker": "^1.9.0",
-    "@temporalio/workflow": "^1.9.0",
+    "@temporalio/client": "^1.17.2",
+    "@temporalio/worker": "^1.17.2",
+    "@temporalio/workflow": "^1.17.2",
     "express": "^4.18.2",
     "fs": "^0.0.1-security",
     "node-fetch": "^2.7.0",
@@ -20,6 +20,7 @@
     "build": "tsc && tsc -p tsconfig.public.json",
     "worker": "npm run build && node lib/temporal/worker.js",
     "client": "npm run build && node lib/temporal/client.js",
+    "seed-closed": "npm run build && node lib/scripts/seed-closed.js",
     "web": "npm run build && node lib/view/web-server.js",
     "dev:worker": "tsc --watch & nodemon lib/temporal/worker.js",
     "dev:web": "tsc --watch & tsc -p tsconfig.public.json --watch & nodemon lib/view/web-server.js"

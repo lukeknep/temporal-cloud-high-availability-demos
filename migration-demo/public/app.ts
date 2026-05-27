@@ -7,6 +7,7 @@ interface LatencyEntry {
 interface WCDQueryResult {
   id: string;
   url: string;
+  sleepInterval?: number;
   contentLastCheckedAt: string | null;
   contentLastChangedAt: string | null;
   // Support both old format (number[]) and new format (LatencyEntry[]) for backwards compatibility
@@ -117,26 +118,40 @@ function timeSince(lastChangedAt: string): string {
 }
 
 // Compute a continuous background color for a card based on time elapsed.
-// Bright blue for <1 min, then fades to grey over the next 5 minutes.
+//   <1 min       → bright blue (hold)
+//   1 min..1 hr  → blue → grey
+//   1 hr..24 hr  → grey → dark grey
+//   >=24 hr      → dark grey (hold)
 function getCardColor(timestamp: string): string {
-  if (!timestamp) return 'rgb(144, 164, 174)'; // grey for unknown
+  const GREY: [number, number, number] = [144, 164, 174];
+  const DARK_GREY: [number, number, number] = [55, 71, 79];
+  const BLUE: [number, number, number] = [41, 121, 255];
+
+  if (!timestamp) return `rgb(${GREY.join(', ')})`;
 
   const diffMs = Date.now() - new Date(timestamp).getTime();
   const ONE_MIN = 60 * 1000;
-  const SIX_MIN = 6 * 60 * 1000; // 1 min hold + 5 min fade
+  const ONE_HOUR = 60 * 60 * 1000;
+  const ONE_DAY = 24 * ONE_HOUR;
+
+  const lerp = (a: [number, number, number], b: [number, number, number], t: number) => {
+    const clamped = Math.max(0, Math.min(1, t));
+    const r = Math.round(a[0] + (b[0] - a[0]) * clamped);
+    const g = Math.round(a[1] + (b[1] - a[1]) * clamped);
+    const bl = Math.round(a[2] + (b[2] - a[2]) * clamped);
+    return `rgb(${r}, ${g}, ${bl})`;
+  };
 
   if (diffMs < ONE_MIN) {
-    return 'rgb(41, 121, 255)'; // bright blue
+    return `rgb(${BLUE.join(', ')})`;
   }
-
-  // t goes from 0 (at 1 min) to 1 (at 6 min or older)
-  const t = Math.min((diffMs - ONE_MIN) / (SIX_MIN - ONE_MIN), 1);
-
-  // Interpolate: blue (41,121,255) → grey (144,164,174)
-  const r = Math.round(41 + (144 - 41) * t);
-  const g = Math.round(121 + (164 - 121) * t);
-  const b = Math.round(255 + (174 - 255) * t);
-  return `rgb(${r}, ${g}, ${b})`;
+  if (diffMs < ONE_HOUR) {
+    return lerp(BLUE, GREY, (diffMs - ONE_MIN) / (ONE_HOUR - ONE_MIN));
+  }
+  if (diffMs < ONE_DAY) {
+    return lerp(GREY, DARK_GREY, (diffMs - ONE_HOUR) / (ONE_DAY - ONE_HOUR));
+  }
+  return `rgb(${DARK_GREY.join(', ')})`;
 }
 
 // Update the time-since displays and card colors every second
@@ -367,6 +382,11 @@ function createChart(workflowsData: WorkflowData[]) {
           }
         },
         tooltip: {
+          titleFont: { size: 28 },
+          bodyFont: { size: 26 },
+          footerFont: { size: 22 },
+          padding: 16,
+          boxPadding: 8,
           callbacks: {
             title: function(context: any) {
                 const timestamp = context[0].parsed.x;
@@ -396,13 +416,15 @@ function createChart(workflowsData: WorkflowData[]) {
           },
           title: {
             display: true,
-            text: 'Time'
+            text: 'Time',
+            font: { size: 28, weight: 'bold' }
           }
         },
         y: {
           title: {
             display: true,
-            text: 'Latency (ms)'
+            text: 'Latency (ms)',
+            font: { size: 28, weight: 'bold' }
           },
           beginAtZero: true
         }
@@ -534,9 +556,50 @@ function closeNewWorkflowModal() {
   }
 }
 
+// Ask the server to seed 6 pre-populated workflows and load them.
+async function seedStartingState() {
+  const button = document.getElementById('seedButton') as HTMLButtonElement | null;
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Seeding...';
+  }
+  try {
+    const resp = await fetch('/api/workflows/seed', { method: 'POST' });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(body.message || 'Seed failed');
+    }
+    const started: Array<{ id: string; url: string }> = body.started || [];
+    const ids = started.map(s => s.id);
+
+    // Merge seeded IDs into the workflowIds input and refresh
+    const input = document.getElementById('workflowIds') as HTMLInputElement | null;
+    if (input) {
+      const existing = input.value
+        .split(',')
+        .map(x => x.trim())
+        .filter(x => x.length > 0);
+      const merged = Array.from(new Set([...existing, ...ids]));
+      input.value = merged.join(', ');
+      saveWorkflowIds();
+    }
+    fetchAndUpdateChart();
+    alert(`Seeded ${ids.length} workflows:\n${ids.join('\n')}`);
+  } catch (err: any) {
+    console.error('Seed error:', err);
+    setWorkflowError('_seed', `Seed failed: ${err.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Seed starting state';
+    }
+  }
+}
+
 // Expose functions globally for onclick handlers
 (window as any).openNewWorkflowModal = openNewWorkflowModal;
 (window as any).closeNewWorkflowModal = closeNewWorkflowModal;
+(window as any).seedStartingState = seedStartingState;
 
 // Start new workflow
 async function startNewWorkflow(id: string, url: string, sleepInterval: number) {
@@ -562,10 +625,96 @@ async function startNewWorkflow(id: string, url: string, sleepInterval: number) 
   }
 }
 
+// --- Sidebar: namespace region check ---
+interface RegionEntry {
+  region: string | null;
+  timestamp: string;
+  error?: string;
+}
+
+const REGION_LOG_MAX = 200;
+let regionLog: RegionEntry[] = [];
+let regionAutoRefreshInterval: number | null = null;
+let regionCheckInFlight = false;
+
+function renderRegionLog(): void {
+  const container = document.getElementById('regionLog');
+  if (!container) return;
+  if (regionLog.length === 0) {
+    container.innerHTML = '<div class="region-log-empty">No checks yet</div>';
+    return;
+  }
+  container.innerHTML = regionLog
+    .map((entry) => {
+      const cls = entry.error ? 'region-log-entry error' : 'region-log-entry';
+      const regionText = entry.error
+        ? `error: ${entry.error}`
+        : entry.region ?? '(unknown)';
+      const ts = new Date(entry.timestamp).toLocaleTimeString();
+      return `<div class="${cls}"><span class="region">${regionText}</span><span class="timestamp">${ts}</span></div>`;
+    })
+    .join('');
+}
+
+async function checkRegion(): Promise<void> {
+  if (regionCheckInFlight) return;
+  regionCheckInFlight = true;
+  try {
+    const resp = await fetch('/api/cloud/namespace');
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      regionLog.unshift({
+        region: null,
+        timestamp: new Date().toISOString(),
+        error: body.message || `HTTP ${resp.status}`,
+      });
+    } else {
+      const nsEl = document.getElementById('sidebarNamespace');
+      if (nsEl && body.namespace) nsEl.textContent = body.namespace;
+      regionLog.unshift({
+        region: body.activeRegion ?? null,
+        timestamp: body.timestamp ?? new Date().toISOString(),
+      });
+    }
+    if (regionLog.length > REGION_LOG_MAX) {
+      regionLog = regionLog.slice(0, REGION_LOG_MAX);
+    }
+    renderRegionLog();
+  } catch (err: any) {
+    regionLog.unshift({
+      region: null,
+      timestamp: new Date().toISOString(),
+      error: err?.message || String(err),
+    });
+    renderRegionLog();
+  } finally {
+    regionCheckInFlight = false;
+  }
+}
+
+function toggleRegionAutoRefresh(enabled: boolean): void {
+  if (enabled) {
+    if (regionAutoRefreshInterval === null) {
+      checkRegion();
+      regionAutoRefreshInterval = window.setInterval(() => {
+        checkRegion();
+      }, 1000);
+    }
+  } else {
+    if (regionAutoRefreshInterval !== null) {
+      clearInterval(regionAutoRefreshInterval);
+      regionAutoRefreshInterval = null;
+    }
+  }
+}
+
+(window as any).checkRegion = checkRegion;
+
 // Allow Enter key to trigger load
 document.addEventListener('DOMContentLoaded', () => {
   const input = document.getElementById('workflowIds');
   const autoRefreshCheckbox = document.getElementById('autoRefreshCheckbox') as HTMLInputElement;
+  const regionAutoRefreshCheckbox = document.getElementById('regionAutoRefreshCheckbox') as HTMLInputElement;
 
   // Load saved workflow IDs
   loadWorkflowIds();
@@ -592,6 +741,17 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleAutoRefresh(true);
   }
 
+  // Region check sidebar
+  if (regionAutoRefreshCheckbox) {
+    regionAutoRefreshCheckbox.checked = false;
+    regionAutoRefreshCheckbox.addEventListener('change', (e) => {
+      const target = e.target as HTMLInputElement;
+      toggleRegionAutoRefresh(target.checked);
+    });
+  }
+  // Fire one initial check so the sidebar shows the namespace and current region.
+  checkRegion();
+
   // Handle new workflow form submission
   const newWorkflowForm = document.getElementById('newWorkflowForm');
   if (newWorkflowForm) {
@@ -600,8 +760,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const formData = new FormData(e.target as HTMLFormElement);
       const url = formData.get('url') as string;
-      const id = hashUrl(url);
+      const id = (formData.get('id') as string).trim();
       const sleepInterval = parseInt(formData.get('sleepInterval') as string);
+
+      if (!id) {
+        setWorkflowError('_newWorkflow', 'Workflow ID is required');
+        return;
+      }
 
       try {
         clearWorkflowError('_newWorkflow');
@@ -611,7 +776,7 @@ document.addEventListener('DOMContentLoaded', () => {
         closeNewWorkflowModal();
 
         // Show success message
-        alert(`Workflow "${result.workflowId}" started successfully!`);
+        alert(`Workflow "${result.workflowId}" started.`);
 
         // Add the new workflow ID to the input field and refresh
         const workflowIdsInput = document.getElementById('workflowIds') as HTMLInputElement;

@@ -1,54 +1,68 @@
-import { proxyActivities, sleep, defineQuery, setHandler } from '@temporalio/workflow';
+import { proxyActivities, condition, defineQuery, defineSignal, setHandler } from '@temporalio/workflow';
 import type * as activities from './activities';
 import { WCDWorkflowParams, WCDQueryResult, LatencyEntry } from '../types';
 
 const { fetchWebpageContent } = proxyActivities<typeof activities>({
   startToCloseTimeout: '1 minute',
   retry: {
-    initialInterval: '10s',
-    maximumInterval: '30s',
-    backoffCoefficient: 2,
-    maximumAttempts: 2,
+    initialInterval: '1s',
+    maximumInterval: '1s',
+    backoffCoefficient: 1,
+    maximumAttempts: 100,
   },
 });
 
+const MAX_CHECKS = 1000;
+
 export const getStatusQuery = defineQuery<WCDQueryResult>('getStatus');
+export const closeSignal = defineSignal('close');
 
 export async function webpageChangeDetectorWorkflow(
   params: WCDWorkflowParams
 ): Promise<void> {
-  const { id, url, sleepInterval } = params;
+  const { id, url, sleepInterval, history, closeImmediately } = params;
 
-  let contentLastCheckedAt: string | null = null;
-  let contentLastChangedAt: string | null = null;
-  let latencies: LatencyEntry[] = [];
+  let contentLastCheckedAt: string | null = history?.contentLastCheckedAt ?? null;
+  let contentLastChangedAt: string | null = history?.contentLastChangedAt ?? null;
+  let latencies: LatencyEntry[] = history?.latencies ? [...history.latencies] : [];
   let lastContentHash: string | null = null;
+  // When started from history, treat the first fetch as the baseline so it
+  // doesn't falsely register as a "change" for the hand-off.
+  let treatNextFetchAsBaseline = !!history;
+  let shouldClose = false;
+  let checkCount = 0;
 
-  // Set up the Query, for visibility
   setHandler(getStatusQuery, (): WCDQueryResult => {
     return {
       id,
       url,
+      sleepInterval,
       contentLastCheckedAt,
       contentLastChangedAt,
       latencies,
     };
   });
 
-  // Monitoring loop
-  while (true) {
+  setHandler(closeSignal, () => {
+    shouldClose = true;
+  });
+
+  if (closeImmediately) {
+    return;
+  }
+
+  while (!shouldClose && checkCount < MAX_CHECKS) {
     try {
-      // Fetch webpage content
       const result = await fetchWebpageContent(url);
-      
-      // Check if content has changed
-      if (result.contentHash !== lastContentHash) {
+
+      if (treatNextFetchAsBaseline) {
+        lastContentHash = result.contentHash;
+        treatNextFetchAsBaseline = false;
+      } else if (result.contentHash !== lastContentHash) {
         lastContentHash = result.contentHash;
         contentLastChangedAt = result.timestamp;
-        // In the future, you could add a notification / email alert here, write to a database, etc.
       }
-      
-      // Record the latency and timestamp
+
       contentLastCheckedAt = result.timestamp;
       latencies.push({
         latency: result.latencyMs,
@@ -57,11 +71,15 @@ export async function webpageChangeDetectorWorkflow(
       if (latencies.length > 100) {
         latencies = latencies.slice(-100);
       }
+      checkCount++;
 
     } catch (error) {
       console.error(`Error checking ${url}:`, error);
     }
 
-    await sleep(sleepInterval * 1000);
+    if (shouldClose || checkCount >= MAX_CHECKS) break;
+
+    // Sleep until the interval elapses OR the close signal arrives.
+    await condition(() => shouldClose, `${sleepInterval}s`);
   }
 }
