@@ -1,0 +1,882 @@
+#!/usr/bin/env python3
+"""
+tcld — mock Temporal Cloud CLI (migration subcommands only).
+
+Intended for vision demos. Output is simulated; state is persisted in
+/tmp/tcld-migration-state.json so follow-up commands chain naturally.
+
+Supported commands:
+  tcld migration start --endpoint-id ID --source-namespace NS --target-namespace NS [--direction s2c|c2s]
+  tcld migration get [--id ID]
+  tcld migration handover [--id ID] --to-replica-id {cloud|on-prem}
+  tcld migration confirm [--id ID]
+
+Flag aliases match the real CLI: -id, -rp, -tn, -sn, -e, -dir.
+Subcommand aliases match the real CLI: g (get), sr (start), hn (handover), c (confirm).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import string
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timedelta, timezone
+
+STATE_FILE = "/tmp/tcld-migration-state.json"
+CONFIG_JSON_PATH = "/Users/luke/git/temporalio/temporal-cloud-high-availability-demos/migration-demo/config.json"
+CLOUD_OPS_BASE = "https://saas-api.tmprl.cloud"
+LOCAL_TEMPORAL_ADDRESS = "localhost:7233"
+
+RESET = "\033[0m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+CYAN = "\033[36m"
+GRAY = "\033[90m"
+
+
+def c(color: str, s: str) -> str:
+    if not sys.stdout.isatty():
+        return s
+    return f"{color}{s}{RESET}"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
+           f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+
+
+def ulid() -> str:
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    return "".join(random.choices(alphabet, k=26))
+
+
+def short_hex(n: int) -> str:
+    return "".join(random.choices("0123456789abcdef", k=n))
+
+
+def ns_uuid() -> str:
+    return str(uuid.uuid4())
+
+
+def log(level: str, component: str, msg: str, **fields) -> None:
+    lvl_color = {
+        "INFO": CYAN,
+        "DEBUG": GRAY,
+        "WARN": YELLOW,
+        "ERROR": RED,
+    }.get(level, CYAN)
+    ts = c(GRAY, now_iso())
+    lvl = c(lvl_color, f"{level:<5}")
+    comp = c(MAGENTA, component)
+    extra = ""
+    if fields:
+        parts = []
+        for k, v in fields.items():
+            parts.append(f"{c(DIM, k)}={c(BOLD, str(v))}")
+        extra = " " + " ".join(parts)
+    print(f"{ts} {lvl} {comp}: {msg}{extra}")
+    sys.stdout.flush()
+
+
+def sleep(ms_min: int, ms_max: int | None = None) -> None:
+    if ms_max is None:
+        ms_max = ms_min
+    time.sleep(random.uniform(ms_min, ms_max) / 1000.0)
+
+
+def load_state() -> dict:
+    if not os.path.exists(STATE_FILE):
+        return {"migrations": {}, "last_id": None}
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {"migrations": {}, "last_id": None}
+
+
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def resolve_id(args_id: str | None, state: dict) -> str:
+    if args_id:
+        return args_id
+    if state.get("last_id"):
+        return state["last_id"]
+    err("no --id provided and no active migration found in local cache")
+    sys.exit(2)
+
+
+def err(msg: str) -> None:
+    print(c(RED, f"Error: {msg}"), file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# real-world side effects: local namespace create + Cloud Ops delete
+# ---------------------------------------------------------------------------
+
+def create_local_namespace(ns: str, retention: str = "7d") -> None:
+    """Shell out to 'temporal operator namespace create' against the local cluster."""
+    log("INFO", "tcld/local",
+        f"registering namespace {c(BOLD, ns)} on local cluster",
+        address=LOCAL_TEMPORAL_ADDRESS)
+    cmd = [
+        "temporal", "operator", "namespace", "create",
+        "--address", LOCAL_TEMPORAL_ADDRESS,
+        "--retention", retention,
+        ns,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        log("WARN", "tcld/local", "'temporal' CLI not on PATH; skipping local register")
+        return
+    except subprocess.TimeoutExpired:
+        log("WARN", "tcld/local",
+            "local cluster unreachable (timeout); skipping local register",
+            address=LOCAL_TEMPORAL_ADDRESS)
+        return
+
+    stderr = (result.stderr or "").strip()
+    if result.returncode == 0:
+        log("INFO", "tcld/local", "local namespace registered",
+            namespace=ns, retention=retention)
+    elif "already exists" in stderr.lower() or "AlreadyExists" in stderr:
+        log("INFO", "tcld/local", "local namespace already present; continuing",
+            namespace=ns)
+    else:
+        last_line = stderr.splitlines()[-1] if stderr else "(no stderr)"
+        log("WARN", "tcld/local", "namespace create returned non-zero",
+            exit_code=result.returncode, stderr=last_line[:160])
+
+
+def load_cloud_ops_key() -> str | None:
+    try:
+        with open(CONFIG_JSON_PATH) as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log("WARN", "tcld/cloudops",
+            f"could not load config.json", path=CONFIG_JSON_PATH, error=str(e))
+        return None
+    key = (cfg.get("temporal") or {}).get("cloudOpsAPIKey")
+    if not key:
+        log("WARN", "tcld/cloudops",
+            "cloudOpsAPIKey not found in config.json")
+    return key
+
+
+def _cloud_ops_request(method: str, path: str, api_key: str,
+                       body: dict | None = None) -> tuple[int, dict | None, str]:
+    url = f"{CLOUD_OPS_BASE}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw) if raw else None
+            return resp.status, parsed, raw
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        try:
+            parsed = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            parsed = None
+        return e.code, parsed, raw
+    except urllib.error.URLError as e:
+        return 0, None, f"URLError: {e.reason}"
+    except Exception as e:  # noqa: BLE001
+        return 0, None, f"{type(e).__name__}: {e}"
+
+
+def cloud_ops_get_namespace(api_key: str, namespace: str) -> dict | None:
+    status, body, raw = _cloud_ops_request("GET",
+        f"/cloud/namespaces/{namespace}", api_key)
+    if status == 200 and isinstance(body, dict):
+        return body
+    log("WARN", "tcld/cloudops",
+        f"GET /cloud/namespaces/{namespace} failed",
+        status=status, body=(raw or "")[:200])
+    return None
+
+
+def cloud_ops_delete_namespace(api_key: str, namespace: str,
+                               resource_version: str) -> dict | None:
+    payload = {
+        "resource_version": resource_version,
+        "async_operation_id": f"tcld-confirm-{short_hex(10)}",
+    }
+    status, body, raw = _cloud_ops_request("DELETE",
+        f"/cloud/namespaces/{namespace}", api_key, body=payload)
+    if status in (200, 202) and isinstance(body, dict):
+        return body
+    log("WARN", "tcld/cloudops",
+        f"DELETE /cloud/namespaces/{namespace} failed",
+        status=status, body=(raw or "")[:200])
+    return None
+
+
+# ---------------------------------------------------------------------------
+# start
+# ---------------------------------------------------------------------------
+
+def cmd_start(args: argparse.Namespace) -> int:
+    # Each 'start' wipes any prior local state so the demo runs fresh.
+    state = {"migrations": {}, "last_id": None}
+
+    mig_id = f"cdm-{ulid()}"
+    account_id = f"acct-{short_hex(8)}"
+    cell_id = random.choice([
+        "cell-us-east-1-a",
+        "cell-us-west-2-c",
+        "cell-eu-central-1-b",
+        "cell-ap-southeast-2-a",
+    ])
+    region = cell_id.split("cell-")[1].rsplit("-", 1)[0]
+    source_ns_id = ns_uuid()
+    target_ns_id = ns_uuid()
+    fv_onprem = random.choice([100, 200, 300])
+    fv_cloud = fv_onprem + 100
+    shard_count = random.choice([256, 512, 1024])
+
+    direction = args.direction or "s2c"
+    if direction == "s2c":
+        direction_str = "SelfHostedToCloud"
+        source_active = "on-prem"
+        passive = "cloud"
+    else:
+        direction_str = "CloudToSelfHosted"
+        source_active = "cloud"
+        passive = "on-prem"
+
+    log("INFO", "tcld/migration",
+        f"resolving migration endpoint {args.endpoint_id}...")
+    sleep(180, 280)
+    log("INFO", "tcld/migration",
+        "migration endpoint resolved",
+        cell=cell_id, region=region, status="HEALTHY",
+        ingress="tls://migration.temporal.cloud:7233")
+    sleep(60, 140)
+
+    log("INFO", "tcld/migration",
+        f"validating source namespace {c(BOLD, args.source_namespace)} via S2S Proxy localhost:8233")
+    sleep(240, 380)
+    log("INFO", "tcld/s2sproxy",
+        "handshake complete",
+        cipher="TLS_AES_256_GCM_SHA384",
+        peer_cn="onprem.migration.client",
+        alpn="h2")
+    sleep(80, 160)
+    log("INFO", "tcld/migration",
+        "source namespace validated",
+        namespace_id=source_ns_id,
+        history_shards=shard_count,
+        active_cluster="onprem-dc1",
+        clusters="[onprem-dc1]")
+    sleep(120, 200)
+
+    log("INFO", "tcld/migration",
+        "verifying mTLS trust chain on cloud ingress")
+    sleep(140, 260)
+    log("INFO", "tcld/migration",
+        "mTLS chain verified",
+        subject_cn=f"{account_id}.client",
+        issuer="Temporal Cloud Root CA",
+        expires="2027-03-01T00:00:00Z",
+        spiffe_id=f"spiffe://temporal.cloud/{account_id}")
+    sleep(80, 140)
+
+    log("INFO", "tcld/migration",
+        "inspecting namespace metrics for capacity planning")
+    sleep(220, 360)
+    log("INFO", "tcld/migration",
+        "capacity ok",
+        open_workflows=random.randint(18_000, 92_000),
+        closed_workflows=random.randint(1_500_000, 4_200_000),
+        p95_actions_per_second=random.randint(340, 890),
+        retention_days=30)
+    sleep(90, 180)
+
+    log("INFO", "tcld/migration",
+        f"creating cloud namespace {c(BOLD, args.target_namespace)} as PASSIVE replica")
+    sleep(340, 520)
+    log("INFO", "tcld/frontend",
+        "RegisterNamespace accepted",
+        namespace_id=target_ns_id,
+        retention_days=30,
+        archival="disabled",
+        is_global_namespace="true",
+        replication_config=f"active={source_active}, clusters=[on-prem, cloud]")
+    sleep(110, 180)
+
+    log("INFO", "tcld/migration",
+        "provisioning failover versions",
+        onprem=fv_onprem, cloud=fv_cloud)
+    sleep(80, 160)
+    log("INFO", "tcld/history",
+        "shard failover version tables updated",
+        shards_updated=shard_count, duration_ms=random.randint(210, 540))
+    sleep(120, 200)
+
+    log("INFO", "tcld/migration",
+        "enabling cross-cluster replication (GlobalNamespace=true)")
+    sleep(220, 340)
+    log("INFO", "tcld/replication",
+        "replication stream established",
+        source_cluster="onprem-dc1",
+        target_cluster=f"cloud-{cell_id}",
+        direction="onprem-dc1 -> cloud",
+        task_queue="temporal-sys-replication-tq")
+    sleep(160, 260)
+
+    log("INFO", "tcld/migration",
+        "dispatching ForceReplicationWorkflow for historical backfill")
+    sleep(180, 280)
+    force_replication_wf = f"temporal-sys-force-replication-{args.source_namespace}-{short_hex(6)}"
+    log("INFO", "tcld/worker",
+        "ForceReplicationWorkflow started",
+        workflow_id=force_replication_wf,
+        namespace="temporal-system",
+        run_id=ns_uuid())
+    sleep(80, 140)
+    log("INFO", "tcld/replication",
+        "backfill scheduled",
+        closed_workflows_estimated=random.randint(1_500_000, 4_200_000),
+        concurrency=32,
+        rate_limit_rps=2000)
+    sleep(120, 220)
+
+    # Real side effect: create the passive-side namespace on the local cluster.
+    # For c2s the self-hosted namespace doesn't exist yet; for s2c the call
+    # will noop (namespace already present) but we run it either way so the
+    # demo narrative stays consistent.
+    create_local_namespace(args.source_namespace)
+    sleep(120, 200)
+
+    created_at = now_iso()
+
+    mig = {
+        "id": mig_id,
+        "account_id": account_id,
+        "direction": direction_str,
+        "status": "STATE_MIGRATION_MIGRATION_STARTED",
+        "status_code": 1,
+        "migration_endpoint_id": args.endpoint_id,
+        "source_namespace": args.source_namespace,
+        "target_namespace": args.target_namespace,
+        "source_namespace_id": source_ns_id,
+        "target_namespace_id": target_ns_id,
+        "cell_id": cell_id,
+        "region": region,
+        "shard_count": shard_count,
+        "failover_versions": {"on-prem": fv_onprem, "cloud": fv_cloud},
+        "replicas": [
+            {"id": "on-prem", "status": "Active" if direction == "s2c" else "PassiveInSync"},
+            {"id": "cloud", "status": "PassiveOutOfSync" if direction == "s2c" else "Active"},
+        ],
+        "created_at": created_at,
+        "last_modified_at": created_at,
+        "last_modified_by": "migrations@temporal.io",
+        "force_replication_workflow_id": force_replication_wf,
+        "version": 1,
+    }
+
+    state["migrations"][mig_id] = mig
+    state["last_id"] = mig_id
+    save_state(state)
+
+    print()
+    print(c(GREEN + BOLD, "Migration started successfully."))
+    print()
+    print_migration(mig)
+    print()
+    print(c(DIM, "Next: poll status with ") + c(BOLD, f"tcld migration get --id {mig_id}"))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# get
+# ---------------------------------------------------------------------------
+
+def cmd_get(args: argparse.Namespace) -> int:
+    state = load_state()
+    mig_id = resolve_id(args.id, state)
+    mig = state["migrations"].get(mig_id)
+    if not mig:
+        err(f"migration {mig_id} not found")
+        return 2
+
+    # Simulate progress since last view.
+    progress = advance_migration(mig)
+    state["migrations"][mig_id] = mig
+    save_state(state)
+
+    log("INFO", "tcld/migration",
+        f"fetching migration {mig_id}")
+    sleep(180, 320)
+    log("INFO", "tcld/migration",
+        "migration record retrieved",
+        version=mig["version"],
+        last_modified_at=mig["last_modified_at"])
+    sleep(60, 120)
+
+    # Print live replication lag / shard progress for a richer view.
+    log("INFO", "tcld/replication",
+        "querying replication stream metrics",
+        cell=mig["cell_id"])
+    sleep(220, 360)
+
+    caught_up_shards = progress["caught_up_shards"]
+    total_shards = mig["shard_count"]
+    replication_lag_ms = progress["replication_lag_ms"]
+    backfill_pct = progress["backfill_pct"]
+
+    log("INFO", "tcld/replication",
+        "replication stream healthy",
+        shards_in_sync=f"{caught_up_shards}/{total_shards}",
+        p50_lag_ms=replication_lag_ms,
+        p99_lag_ms=int(replication_lag_ms * 3.2),
+        bytes_per_sec=f"{random.randint(18, 74)}MiB/s")
+    sleep(90, 170)
+
+    log("INFO", "tcld/replication",
+        "force-replication backfill progress",
+        workflow_id=mig["force_replication_workflow_id"],
+        complete_pct=f"{backfill_pct}%",
+        tasks_ack=random.randint(1_200_000, 3_900_000),
+        tasks_pending=random.randint(0, 400_000))
+    sleep(80, 140)
+
+    print()
+    print_migration(mig)
+    print()
+
+    # Render the JSON as if returned from the API for verisimilitude.
+    print(c(DIM, "---- CustomerDrivenMigration (raw) ----"))
+    print(json.dumps(mig, indent=2))
+    return 0
+
+
+def advance_migration(mig: dict) -> dict:
+    """Deterministically advance the migration each time get is called.
+
+    First call: ~2/3 replicated, still MIGRATION_STARTED (not ready for handover).
+    Second call onward: 100% replicated, HANDOVER_PENDING (ready for handover).
+    """
+    call = mig.get("_get_count", 0) + 1
+    mig["_get_count"] = call
+
+    if call == 1:
+        pct = 67
+    else:
+        pct = 100
+        if mig["status_code"] == 1:
+            mig["status"] = "STATE_MIGRATION_HANDOVER_PENDING"
+            mig["status_code"] = 3
+            for r in mig["replicas"]:
+                if r["status"] == "PassiveOutOfSync":
+                    r["status"] = "PassiveInSync"
+            mig["last_modified_at"] = now_iso()
+            mig["version"] += 1
+
+    mig["_backfill_pct"] = pct
+    caught_up = int(mig["shard_count"] * (pct / 100.0))
+    lag_ms = random.randint(40, 180) if pct < 85 else random.randint(8, 35)
+    return {
+        "caught_up_shards": caught_up,
+        "replication_lag_ms": lag_ms,
+        "backfill_pct": pct,
+    }
+
+
+# ---------------------------------------------------------------------------
+# handover
+# ---------------------------------------------------------------------------
+
+def cmd_handover(args: argparse.Namespace) -> int:
+    state = load_state()
+    mig_id = resolve_id(args.id, state)
+    mig = state["migrations"].get(mig_id)
+    if not mig:
+        err(f"migration {mig_id} not found")
+        return 2
+
+    if args.to_replica_id not in ("cloud", "on-prem"):
+        err(f"invalid --to-replica-id {args.to_replica_id!r}; must be 'cloud' or 'on-prem'")
+        return 2
+
+    to_replica = args.to_replica_id
+    from_replica = "cloud" if to_replica == "on-prem" else "on-prem"
+
+    log("INFO", "tcld/migration",
+        f"initiating handover of {mig_id} to replica {c(BOLD, to_replica)}")
+    sleep(160, 240)
+    log("INFO", "tcld/migration",
+        "validating pre-handover invariants")
+    sleep(220, 360)
+    log("INFO", "tcld/migration",
+        "pre-handover checks passed",
+        replication_lag_ms=random.randint(6, 22),
+        shard_parity=f"{mig['shard_count']}/{mig['shard_count']}",
+        pending_replication_tasks=random.randint(0, 40))
+    sleep(110, 180)
+
+    log("INFO", "tcld/matching",
+        f"draining task queues on {from_replica}",
+        task_queues=random.randint(140, 520))
+    sleep(420, 640)
+    log("INFO", "tcld/matching",
+        "task queues quiesced",
+        drained_tasks=random.randint(4_800, 21_000),
+        residual=0)
+    sleep(110, 180)
+
+    log("INFO", "tcld/frontend",
+        f"entering read-only window on {from_replica}",
+        duration_budget_ms=8000)
+    sleep(240, 360)
+
+    log("INFO", "tcld/history",
+        f"flushing in-flight history events on {from_replica}",
+        shards=mig["shard_count"])
+    sleep(560, 820)
+    log("INFO", "tcld/history",
+        "history flushed; last_event_ids propagated",
+        high_watermark_ms=random.randint(3, 14))
+    sleep(120, 180)
+
+    log("INFO", "tcld/replication",
+        "awaiting final replication ack from target cluster")
+    sleep(420, 640)
+    log("INFO", "tcld/replication",
+        "final ack received",
+        tail_events_replicated=random.randint(180, 920))
+    sleep(100, 160)
+
+    log("INFO", "tcld/migration",
+        f"promoting {to_replica} to ACTIVE and demoting {from_replica} to PASSIVE")
+    sleep(320, 480)
+    log("INFO", "tcld/frontend",
+        "UpdateNamespace.active_cluster_name committed",
+        namespace=mig["target_namespace"] if to_replica == "cloud" else mig["source_namespace"],
+        active_cluster=to_replica,
+        failover_version=mig["failover_versions"][to_replica])
+    sleep(180, 260)
+
+    log("INFO", "tcld/matching",
+        f"unblocking task queues on {to_replica}")
+    sleep(220, 340)
+
+    # Mutate state.
+    for r in mig["replicas"]:
+        r["status"] = "Active" if r["id"] == to_replica else "PassiveInSync"
+    mig["status"] = "STATE_MIGRATION_HANDOVER_COMPLETE"
+    mig["status_code"] = 4 if to_replica == "cloud" else 3  # C2S keeps room for re-confirm
+    mig["last_modified_at"] = now_iso()
+    mig["version"] += 1
+    mig["last_handover"] = {
+        "to_replica_id": to_replica,
+        "from_replica_id": from_replica,
+        "completed_at": mig["last_modified_at"],
+        "total_elapsed_ms": random.randint(2800, 4400),
+    }
+    state["migrations"][mig_id] = mig
+    save_state(state)
+
+    print()
+    print(c(GREEN + BOLD, f"Handover to '{to_replica}' complete."))
+    print()
+    print_migration(mig)
+    print()
+    if to_replica == "on-prem":
+        print(c(YELLOW, "Traffic is now served from the on-prem cluster."))
+        print(c(DIM, "The cloud replica remains in sync as a fallback. "
+                    "Run 'tcld migration confirm' once you're ready to tear it down,"))
+        print(c(DIM, "or 'tcld migration handover --to-replica-id cloud' to fail back."))
+    else:
+        print(c(YELLOW, "Traffic is now served from Temporal Cloud."))
+        print(c(DIM, "Run 'tcld migration confirm' to finalize (irreversible)."))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# confirm
+# ---------------------------------------------------------------------------
+
+def cmd_confirm(args: argparse.Namespace) -> int:
+    state = load_state()
+    mig_id = resolve_id(args.id, state)
+    mig = state["migrations"].get(mig_id)
+    if not mig:
+        err(f"migration {mig_id} not found")
+        return 2
+
+    active = next((r["id"] for r in mig["replicas"] if r["status"] == "Active"), None)
+    if active is None:
+        err("no active replica; cannot confirm")
+        return 2
+
+    print(c(YELLOW + BOLD,
+            "WARNING: confirming a migration is IRREVERSIBLE."))
+    print(c(YELLOW,
+            f"The passive replica will be abandoned and all cross-cluster "
+            f"replication state will be torn down."))
+    print(c(DIM, "Proceeding (demo mode: --force implied)..."))
+    print()
+    sleep(400, 600)
+
+    log("INFO", "tcld/migration",
+        f"confirming migration {mig_id}",
+        active_replica=active)
+    sleep(220, 320)
+
+    log("INFO", "tcld/migration",
+        "entering CONFIRM_IN_PROGRESS state")
+    mig["status"] = "STATE_MIGRATION_CONFIRM_IN_PROGRESS"
+    mig["status_code"] = 10
+    sleep(140, 220)
+
+    passive = "cloud" if active == "on-prem" else "on-prem"
+
+    log("INFO", "tcld/replication",
+        f"tearing down replication stream {active} <-> {passive}")
+    sleep(520, 780)
+    log("INFO", "tcld/replication",
+        "replication stream closed",
+        shards_closed=mig["shard_count"],
+        leftover_tasks=0)
+    sleep(120, 180)
+
+    log("INFO", "tcld/frontend",
+        f"marking namespace as non-global (single cluster = {active})",
+        namespace=mig["target_namespace"] if active == "cloud" else mig["source_namespace"])
+    sleep(340, 520)
+    log("INFO", "tcld/frontend",
+        "UpdateNamespace.replication_config committed",
+        clusters=f"[{active}]",
+        is_global_namespace="false")
+    sleep(100, 160)
+
+    log("INFO", "tcld/migration",
+        f"abandoning {passive} replica")
+    sleep(220, 340)
+    log("INFO", "tcld/migration",
+        "passive replica marked Abandoned",
+        replica_id=passive,
+        freed_shards=mig["shard_count"],
+        reclaimed_storage_gib=random.randint(180, 940))
+    sleep(120, 180)
+
+    # Real side effect: when the abandoned replica is the cloud side, issue an
+    # actual Cloud Ops API call to delete the namespace.
+    if passive == "cloud":
+        cloud_ns = mig["target_namespace"]
+        api_key = load_cloud_ops_key()
+        if api_key:
+            log("INFO", "tcld/cloudops",
+                f"GET /cloud/namespaces/{cloud_ns} (fetch resource_version)",
+                base_url=CLOUD_OPS_BASE)
+            ns_obj = cloud_ops_get_namespace(api_key, cloud_ns)
+            if ns_obj:
+                rv = (
+                    (ns_obj.get("namespace") or {}).get("resource_version")
+                    or ns_obj.get("resource_version")
+                )
+                if rv:
+                    log("INFO", "tcld/cloudops",
+                        "fetched namespace record",
+                        resource_version=rv,
+                        state=(ns_obj.get("namespace") or {}).get("state", "?"))
+                    sleep(120, 220)
+                    log("INFO", "tcld/cloudops",
+                        f"DELETE /cloud/namespaces/{cloud_ns}",
+                        resource_version=rv)
+                    resp = cloud_ops_delete_namespace(api_key, cloud_ns, rv)
+                    if resp:
+                        async_op = resp.get("async_operation") or {}
+                        log("INFO", "tcld/cloudops",
+                            "namespace deletion accepted",
+                            async_operation_id=async_op.get("id", "?"),
+                            state=async_op.get("state", "?"))
+                else:
+                    log("WARN", "tcld/cloudops",
+                        "no resource_version in GET response; skipping DELETE")
+        sleep(120, 180)
+
+    log("INFO", "tcld/s2sproxy",
+        "tearing down S2S Proxy channel",
+        endpoint_id=mig["migration_endpoint_id"])
+    sleep(280, 420)
+    log("INFO", "tcld/s2sproxy",
+        "channel closed",
+        bytes_in=f"{random.randint(240, 980)}GiB",
+        bytes_out=f"{random.randint(12, 74)}GiB",
+        uptime=f"{random.randint(3, 19)}h{random.randint(0,59)}m")
+    sleep(100, 160)
+
+    log("INFO", "tcld/migration",
+        "emitting migration.confirmed audit event",
+        audit_id=ns_uuid())
+    sleep(140, 220)
+
+    # Finalize state.
+    for r in mig["replicas"]:
+        r["status"] = "Active" if r["id"] == active else "Abandoned"
+    mig["status"] = "STATE_MIGRATION_CONFIRMED"
+    mig["status_code"] = 6
+    mig["last_modified_at"] = now_iso()
+    mig["version"] += 1
+    mig["confirmed_at"] = mig["last_modified_at"]
+    state["migrations"][mig_id] = mig
+    save_state(state)
+
+    print()
+    print(c(GREEN + BOLD, "Migration confirmed."))
+    print(c(DIM, f"Active replica: {active}. Namespace is now single-cluster."))
+    print()
+    print_migration(mig)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# printing helpers
+# ---------------------------------------------------------------------------
+
+def print_migration(mig: dict) -> None:
+    def row(label: str, value: str, color: str = BOLD) -> None:
+        print(f"  {c(DIM, label.ljust(24))}{c(color, value)}")
+
+    status_color = {
+        "STATE_MIGRATION_MIGRATION_STARTED": CYAN,
+        "STATE_MIGRATION_HANDOVER_PENDING": YELLOW,
+        "STATE_MIGRATION_HANDOVER_COMPLETE": YELLOW,
+        "STATE_MIGRATION_CONFIRM_IN_PROGRESS": YELLOW,
+        "STATE_MIGRATION_CONFIRMED": GREEN,
+        "STATE_MIGRATION_FAILED": RED,
+        "STATE_MIGRATION_CANCELLED": RED,
+    }.get(mig["status"], BOLD)
+
+    print(c(BOLD, "Migration:"))
+    row("ID:", mig["id"])
+    row("Account ID:", mig["account_id"])
+    row("Direction:", mig["direction"])
+    row("Status:", f"{mig['status']} ({mig['status_code']})", status_color)
+    row("Migration Endpoint ID:", mig["migration_endpoint_id"])
+    row("Source Namespace:", f"{mig['source_namespace']} ({mig['source_namespace_id']})")
+    row("Target Namespace:", f"{mig['target_namespace']} ({mig['target_namespace_id']})")
+    row("Cell:", f"{mig['cell_id']} ({mig['region']})")
+    row("History Shards:", str(mig["shard_count"]))
+    row("Failover Versions:",
+        f"on-prem={mig['failover_versions']['on-prem']}, cloud={mig['failover_versions']['cloud']}")
+    row("Created At:", mig["created_at"])
+    row("Last Modified At:", mig["last_modified_at"])
+    row("Last Modified By:", mig["last_modified_by"])
+    row("Version:", str(mig["version"]))
+    print(f"  {c(DIM, 'Replicas:')}")
+    for r in mig["replicas"]:
+        color = {
+            "Active": GREEN,
+            "PassiveInSync": CYAN,
+            "PassiveOutOfSync": YELLOW,
+            "Abandoned": GRAY,
+            "Unknown": RED,
+        }.get(r["status"], BOLD)
+        print(f"    - {c(BOLD, r['id'].ljust(8))}  status: {c(color, r['status'])}")
+
+
+# ---------------------------------------------------------------------------
+# argparse plumbing
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tcld",
+        description="Temporal Cloud CLI (mock, migration subcommands only)",
+    )
+    sub = parser.add_subparsers(dest="topic", required=True)
+
+    migration = sub.add_parser("migration", help="manage customer-driven migrations")
+    msub = migration.add_subparsers(dest="action", required=True)
+
+    # start / sr
+    p_start = msub.add_parser("start", aliases=["sr"], help="start a migration")
+    p_start.add_argument("--migration-endpoint-id", "--endpoint-id", "-e",
+                         dest="endpoint_id", required=True,
+                         help="the migration endpoint id")
+    p_start.add_argument("--source-namespace", "-sn", dest="source_namespace", required=True,
+                         help="the source namespace name")
+    p_start.add_argument("--target-namespace", "-tn", dest="target_namespace", required=True,
+                         help="the target namespace name")
+    p_start.add_argument("--direction", "-dir", dest="direction",
+                         choices=["s2c", "c2s"], default="s2c",
+                         help="migration direction: 's2c' (self-hosted to cloud) or 'c2s'")
+    p_start.set_defaults(func=cmd_start)
+
+    # get / g
+    p_get = msub.add_parser("get", aliases=["g"], help="get a migration")
+    p_get.add_argument("--id", "-id", dest="id", default=None,
+                       help="the migration id (defaults to last started)")
+    p_get.set_defaults(func=cmd_get)
+
+    # handover / hn
+    p_ho = msub.add_parser("handover", aliases=["hn"], help="handover the active replica")
+    p_ho.add_argument("--id", "-id", dest="id", default=None,
+                      help="the migration id (defaults to last started)")
+    p_ho.add_argument("--to-replica-id", "-rp", dest="to_replica_id", required=True,
+                      choices=["cloud", "on-prem"],
+                      help="the target replica id for handover")
+    p_ho.set_defaults(func=cmd_handover)
+
+    # confirm / c
+    p_cf = msub.add_parser("confirm", aliases=["c"], help="confirm migration (irreversible)")
+    p_cf.add_argument("--id", "-id", dest="id", default=None,
+                      help="the migration id (defaults to last started)")
+    p_cf.set_defaults(func=cmd_confirm)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    # Demo-friendly defaults: if the user runs the bare subcommand with no
+    # flags (as in the brief), fill in plausible values rather than erroring.
+    if len(argv) >= 3 and argv[1] == "migration":
+        action = argv[2]
+        rest = argv[3:]
+        if action in ("start", "sr") and not rest:
+            argv = argv + [
+                "--endpoint-id", f"mep-{short_hex(12)}",
+                "--source-namespace", "orders.prod",
+                "--target-namespace", "orders.acct-5f7c2a9e",
+            ]
+
+    parser = build_parser()
+    args = parser.parse_args(argv[1:])
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        print()
+        print(c(RED, "interrupted"), file=sys.stderr)
+        sys.exit(130)
